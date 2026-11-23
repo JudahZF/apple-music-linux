@@ -1,0 +1,35 @@
+[package]
+name = "adam-streams"
+description = "AAC and music-video (Widevine) streams: segment download, key acquisition, sample decryption, fragment indexing and the licence provider."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+adam-core = { path = "../adam-core" }
+adam-hls = { path = "../adam-hls" }
+adam-mp4 = { path = "../adam-mp4" }
+adam-widevine = { path = "../adam-widevine" }
+async-trait.workspace = true
+bytes.workspace = true
+dirs = "6"
+futures.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+sha2 = "0.11"
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+adam-mp4 = { path = "../adam-mp4", features = ["test-util"] }
+# The libvlc proof of the AAC init length (`tests/vlc_live.rs`, ignored by default).
+adam-vlc = { path = "../adam-vlc" }
+serde_json.workspace = true
+tempfile = "3"
+wiremock = "0.6"

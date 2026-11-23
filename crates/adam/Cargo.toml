@@ -1,0 +1,22 @@
+[package]
+name = "adam"
+description = "Adam, an Apple Music desktop client for Linux and Windows."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+adam-engine = { path = "../adam-engine" }
+adam-ui-pages = { path = "../adam-ui-pages" }
+adam-ui-panels = { path = "../adam-ui-panels" }
+adam-ui-shell = { path = "../adam-ui-shell" }
+anyhow.workspace = true
+tokio.workspace = true
+
+[features]
+# `adam --scenario tour|a11y|idle`: the headless checks (crates/adam-ui-shell/README.md).
+scenario = ["adam-ui-shell/scenario"]

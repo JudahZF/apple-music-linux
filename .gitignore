@@ -1,12 +1,12 @@
 # ── Build outputs ─────────────────────────────────────────────────────────────
 node_modules/
 
-# Release artifacts (distributed via GitHub Releases)
+# Release artifacts (distributed via GitHub Releases): scripts/build-package.sh,
+# build-installer.sh and build-appimage.sh write dist/
 *.AppImage
 *.run
 dist/
 build/
-.installer-stage/
 
 # Electron chromedriver (downloaded for automation, not part of the build)
 electron/chromedriver/
@@ -175,10 +175,7 @@ drm/embedded_blobs/
 drm/files/
 drm/*.o
 
-# Flatpak build output
-.flatpak-build/
-.flatpak-builder/
-.flatpak-repo/
+# scripts/build-ffmpeg.sh work directory
 .ffmpeg-build/
 
 # ── Local-only research material and tooling (never publish) ──────────────────
@@ -195,3 +192,6 @@ electron/native/*.dll
 electron/native/*.obj
 electron/native/*.lib
 electron/native/*.exp
+
+# ── Rust ──────────────────────────────────────────────────────────────────────
+/target/

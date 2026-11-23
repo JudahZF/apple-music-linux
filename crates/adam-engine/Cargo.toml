@@ -1,0 +1,72 @@
+[package]
+name = "adam-engine"
+description = "The Adam engine: local HTTPS API server and request handlers."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+adam-ampapi = { path = "../adam-ampapi" }
+adam-apple = { path = "../adam-apple" }
+adam-core = { path = "../adam-core" }
+adam-diskcache = { path = "../adam-diskcache" }
+adam-drm = { path = "../adam-drm" }
+adam-export = { path = "../adam-export" }
+adam-fairplay = { path = "../adam-fairplay" }
+adam-framering = { path = "../adam-framering" }
+adam-library = { path = "../adam-library" }
+adam-mp4 = { path = "../adam-mp4" }
+adam-playback = { path = "../adam-playback" }
+adam-player = { path = "../adam-player" }
+adam-streams = { path = "../adam-streams" }
+adam-vlc = { path = "../adam-vlc" }
+anyhow.workspace = true
+async-trait.workspace = true
+axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio"] }
+base64 = "0.22"
+bytes.workspace = true
+futures.workspace = true
+hyper = { version = "1", features = ["http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["server-auto", "server-graceful", "service", "tokio"] }
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+regex = "1"
+reqwest.workspace = true
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "logging", "std", "tls12"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+subtle = "2"
+time = { version = "0.3", features = ["std"] }
+thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "logging", "tls12"] }
+tokio-util.workspace = true
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["fs"] }
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "env-filter", "fmt", "std"] }
+url = "2"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["process"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+    "Win32_Security",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+adam-mp4 = { path = "../adam-mp4", features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util"] }
+http-body-util = "0.1"
+tempfile = "3"
+wiremock = "0.6"

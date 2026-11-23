@@ -1,7 +1,8 @@
 #!/bin/sh
-# Run every style and static check the project enforces (CI runs the same set).
+# Run the style and static checks for the Rust workspace and the shell scripts.
 #   scripts/lint.sh        check
-#   scripts/lint.sh --fix  apply gofmt / clang-format / eslint fixes first
+#   scripts/lint.sh --fix  apply rustfmt first
+# On NixOS run it inside `nix-shell` (the gpui crates build against the libraries it provides).
 set -eu
 repo=$(cd "$(dirname "$0")/.." && pwd)
 fix=0; [ "${1:-}" = "--fix" ] && fix=1
@@ -9,37 +10,19 @@ fail=0
 step() { printf '\n== %s\n' "$1"; }
 run() { "$@" || fail=1; }
 
-step "Go: gofmt -s"
-cd "$repo/engine"
-# Generated files (protoc output) stay as generated: gofmt's alignment changes between Go releases.
-gosrc=$(git ls-files '*.go' | xargs grep -L '^// Code generated .* DO NOT EDIT\.$')
-[ "$fix" = 1 ] && gofmt -s -w $gosrc
-out=$(gofmt -s -l $gosrc); [ -z "$out" ] || { echo "$out"; fail=1; }
+cd "$repo"
+step "Rust: rustfmt"
+[ "$fix" = 1 ] && cargo fmt --all
+run cargo fmt --all --check
 
-step "Go: vet"
-run go vet ./...
+step "Rust: clippy"
+run cargo clippy --workspace --all-targets -- -D warnings
 
-step "Go: staticcheck"
-if command -v staticcheck >/dev/null 2>&1; then run staticcheck ./...
-elif [ -x "$(go env GOPATH)/bin/staticcheck" ]; then run "$(go env GOPATH)/bin/staticcheck" ./...
-else echo "staticcheck not installed: go install honnef.co/go/tools/cmd/staticcheck@2026.2.2"; fail=1; fi
+step "Shell: shellcheck"
+if command -v shellcheck >/dev/null 2>&1; then
+    run shellcheck scripts/*.sh
+else
+    echo "shellcheck not installed (e.g. apt install shellcheck, or nix shell nixpkgs#shellcheck)"; fail=1
+fi
 
-step "C: clang-format (drm/, own sources only)"
-if command -v clang-format >/dev/null 2>&1; then
-    if [ "$fix" = 1 ]; then make -s -C "$repo/drm" format; fi
-    run make -s -C "$repo/drm" format-check
-else echo "clang-format not installed (pip install clang-format==23.1.1)"; fail=1; fi
-
-step "JS: eslint"
-cd "$repo/electron"
-if [ -x node_modules/.bin/eslint ]; then
-    if [ "$fix" = 1 ]; then run npx eslint --fix .; else run npx eslint .; fi
-else echo "eslint missing: run npm ci in electron/"; fail=1; fi
-
-step "Shell: syntax"
-for f in "$repo"/scripts/*.sh "$repo"/electron/build.sh; do
-    [ -f "$f" ] || continue
-    case "$(head -1 "$f")" in *bash*) run bash -n "$f" ;; *) run sh -n "$f" ;; esac
-done
-
-[ "$fail" = 0 ] && printf '\nAll checks passed.\n' || { printf '\nSome checks failed.\n'; exit 1; }
+if [ "$fail" = 0 ]; then printf '\nAll checks passed.\n'; else printf '\nSome checks failed.\n'; exit 1; fi

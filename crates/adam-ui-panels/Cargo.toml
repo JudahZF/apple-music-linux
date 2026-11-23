@@ -1,0 +1,43 @@
+[package]
+name = "adam-ui-panels"
+description = "The Settings and Downloads pages of Adam's UI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+adam-app = { path = "../adam-app" }
+adam-core = { path = "../adam-core" }
+adam-desktop = { path = "../adam-desktop" }
+adam-integrations = { path = "../adam-integrations" }
+adam-player = { path = "../adam-player" }
+adam-ui = { path = "../adam-ui" }
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+futures.workspace = true
+gpui.workspace = true
+gpui_platform = { workspace = true, features = ["wayland", "x11"] }
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[features]
+# gpui's test platform for headless view tests: `cargo test -p adam-ui-panels --features test-support`.
+test-support = ["gpui/test-support", "gpui_platform/test-support", "adam-ui/test-support", "preview"]
+# Built model values for screenshots (signed in, running downloads): the example and the tests.
+preview = []
+
+[[example]]
+name = "panels"
+required-features = ["preview"]
+
+[dev-dependencies]
+# The example's engine role (`panels engine --api <port>`), as `crates/adam` runs it.
+adam-engine = { path = "../adam-engine" }
+anyhow.workspace = true
+tempfile = "3"
+tokio-util.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter", "tracing-log"] }

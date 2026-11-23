@@ -1,44 +1,68 @@
 #!/usr/bin/env bash
-# bundle-vlc.sh — copies the audio-only subset of the system VLC (libvlc, libvlccore and
-# the plugins the engine uses) into electron/dist/resources/vlc, where electron-builder
-# picks it up and main.mjs points LD_LIBRARY_PATH / VLC_PLUGIN_PATH at it. Without it the
-# installed app depends on whatever VLC the user has.
+# bundle-vlc.sh — copies the subset of the system VLC that the engine uses (libvlc, libvlccore,
+# the audio plugins and the music-video plugins) into DEST, the package's `vlc/` directory.
 #
-# Usage: scripts/bundle-vlc.sh [--force]   (--force rebuilds an existing bundle)
+# The engine loads libvlc from `vlc/` beside the executable (crates/adam-vlc), and the app points
+# VLC_PLUGIN_PATH and LD_LIBRARY_PATH at it (adam-desktop `bundled_libs`). Without the bundle the
+# engine falls back to whatever libvlc the system has.
+#
+# VLC's avcodec, avformat and swscale plugins only load against the FFmpeg sonames they were
+# built with, so the bundle must carry those FFmpeg libraries too:
+#   x86_64  third_party/ffmpeg/lib (FFmpeg 9: matches the VLC of a rolling distribution), or
+#   any     ADAM_VLC_FFMPEG_LIBDIR: libraries made by scripts/build-vlc-ffmpeg.sh for this VLC
+#           (needed on Ubuntu 22.04, whose VLC links FFmpeg 4, and on every CPU but x86_64).
+#
+# Usage: scripts/bundle-vlc.sh DEST
+#   ADAM_VLC_LIBDIR   directory with libvlc.so.5.* (default: the first of /usr/lib/<multiarch>,
+#                     /usr/lib64, /usr/lib that has it)
+#   ADAM_VLC_PLUGINS  VLC's plugin directory (default: $ADAM_VLC_LIBDIR/vlc/plugins)
+#   ADAM_MAX_GLIBC    newest glibc a bundled library may need (default 2.38); `none` skips the
+#                     check, for a package that only has to run on the machine that built it
 
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-DEST="$REPO/electron/dist/resources/vlc"
-LIBDIR="${ADAM_VLC_LIBDIR:-/usr/lib}"
+DEST="${1:?usage: bundle-vlc.sh DEST}"
+ARCH="$(uname -m)"
+
+LIBDIR="${ADAM_VLC_LIBDIR:-}"
+if [ -z "$LIBDIR" ]; then
+    for d in "/usr/lib/$ARCH-linux-gnu" /usr/lib64 /usr/lib; do
+        if compgen -G "$d/libvlc.so.5.*" >/dev/null; then LIBDIR=$d; break; fi
+    done
+fi
 SRC="${ADAM_VLC_PLUGINS:-$LIBDIR/vlc/plugins}"
-
-if [ "${1:-}" = "--force" ]; then
-    rm -rf "$DEST"
-fi
-if [ -f "$DEST/libvlc.so.5" ] && [ -d "$DEST/plugins" ]; then
-    echo "VLC already bundled: $(du -sh "$DEST" | cut -f1)"
-    exit 0
-fi
-
-if ! ls "$LIBDIR"/libvlc.so.5.* >/dev/null 2>&1 || [ ! -d "$SRC" ]; then
-    echo "error: system VLC not found (looked for $LIBDIR/libvlc.so.5.* and $SRC)." >&2
-    echo "  Install it (e.g. 'sudo pacman -S vlc' / 'sudo apt install vlc') or set ADAM_VLC_LIBDIR / ADAM_VLC_PLUGINS." >&2
+if [ -z "$LIBDIR" ] || ! compgen -G "$LIBDIR/libvlc.so.5.*" >/dev/null || [ ! -d "$SRC" ]; then
+    echo "error: system VLC not found (looked for libvlc.so.5.* in ${LIBDIR:-/usr/lib/$ARCH-linux-gnu, /usr/lib64, /usr/lib} and plugins in $SRC)." >&2
+    echo "  Install it (e.g. 'sudo apt install libvlc-dev vlc-plugin-base' / 'sudo pacman -S vlc') or set ADAM_VLC_LIBDIR / ADAM_VLC_PLUGINS." >&2
     exit 1
 fi
 
-echo "Bundling VLC libs → $DEST ..."
+FFLIB=""
+if [ "$ARCH" = x86_64 ]; then
+    FFLIB="$REPO/third_party/ffmpeg/lib"
+    [ -d "$FFLIB" ] || { echo "error: $FFLIB is missing (git lfs pull?)" >&2; exit 1; }
+elif [ -z "${ADAM_VLC_FFMPEG_LIBDIR:-}" ]; then
+    echo "error: there is no bundled FFmpeg for $ARCH: build the libraries VLC's plugins link with" >&2
+    echo "  scripts/build-vlc-ffmpeg.sh DIR and set ADAM_VLC_FFMPEG_LIBDIR=DIR" >&2
+    exit 1
+fi
+
+echo "Bundling VLC from $LIBDIR → $DEST ..."
+rm -rf "$DEST"
 mkdir -p "$DEST"
 cp "$LIBDIR"/libvlc.so.5.* "$LIBDIR"/libvlccore.so.9.* "$DEST/"
 (cd "$DEST" && ln -sf libvlc.so.5.*.* libvlc.so.5 && ln -sf libvlccore.so.9.*.* libvlccore.so.9)
 
 P="$DEST/plugins"
-mkdir -p "$P"/{access,demux,codec,audio_output,audio_filter,packetizer,misc,stream_filter,control}
+mkdir -p "$P"
 
-# Each group is best-effort: a plugin a distro does not ship is simply skipped.
+# Each group is best-effort: a plugin a distribution does not ship is skipped. The ones the
+# engine cannot do without are checked below.
 cp_plugins() { # <dir> <plugin>...
     local dir="$1"; shift
     local f
+    mkdir -p "$P/$dir"
     for f in "$@"; do cp "$SRC/$dir/$f" "$P/$dir/" 2>/dev/null || true; done
 }
 
@@ -49,11 +73,11 @@ cp_plugins access libhttp_plugin.so libhttps_plugin.so libtcp_plugin.so libfiles
 cp_plugins demux libadaptive_plugin.so libmp4_plugin.so libts_plugin.so libes_plugin.so \
     libavformat_plugin.so libflacsys_plugin.so libogg_plugin.so libwav_plugin.so \
     librawaud_plugin.so libplaylist_plugin.so
-# codec — ALAC/AAC/MP3/AC3/FLAC via ffmpeg plus individual fallbacks (no faad: libavcodec decodes AAC)
+# codec — ALAC/AAC/H.264 via FFmpeg plus individual fallbacks (no faad: libavcodec decodes AAC)
 cp_plugins codec libavcodec_plugin.so libaraw_plugin.so libmpg123_plugin.so liba52_plugin.so \
     libflac_plugin.so libvorbis_plugin.so libopus_plugin.so libspdif_plugin.so \
     libddummy_plugin.so libedummy_plugin.so liblpcm_plugin.so libg711_plugin.so
-# audio_output — PulseAudio + ALSA + dummy
+# audio_output — PulseAudio (PipeWire serves it too) + ALSA + memory/dummy outputs
 cp_plugins audio_output libpulse_plugin.so libalsa_plugin.so libamem_plugin.so \
     libadummy_plugin.so libafile_plugin.so
 # audio_filter — format conversion + resampling (rate/format matching)
@@ -61,36 +85,41 @@ cp_plugins audio_filter libaudio_format_plugin.so libsimple_channel_mixer_plugin
     libtrivial_channel_mixer_plugin.so libsamplerate_plugin.so libsoxr_plugin.so \
     libspeex_resampler_plugin.so libscaletempo_plugin.so libgain_plugin.so libnormvol_plugin.so \
     libmono_plugin.so libugly_resampler_plugin.so
-# packetizer — AAC/ALAC, AC-3/E-AC-3 (Atmos), FLAC, MP3, copy, generic
-cp_plugins packetizer libpacketizer_mpeg4audio_plugin.so libpacketizer_a52_plugin.so \
+# video — music videos: frames go to memory (vmem) for the UI's frame ring; chroma conversion
+cp_plugins video_output libvmem_plugin.so
+cp_plugins video_chroma libswscale_plugin.so libchain_plugin.so
+# packetizer — H.264/HEVC (video), AAC/ALAC, AC-3/E-AC-3 (Atmos), FLAC, MP3, copy, generic
+cp_plugins packetizer libpacketizer_h264_plugin.so libpacketizer_hevc_plugin.so \
+    libpacketizer_mpeg4audio_plugin.so libpacketizer_a52_plugin.so \
     libpacketizer_flac_plugin.so libpacketizer_mpegaudio_plugin.so libpacketizer_copy_plugin.so \
     libpacketizer_avparser_plugin.so libpacketizer_mlp_plugin.so libpacketizer_dts_plugin.so
 # misc — TLS (HTTPS), XML (HLS manifests), logger
 cp_plugins misc libgnutls_plugin.so libxml_plugin.so liblogger_plugin.so
 # stream_filter — HLS segment stitching
-for n in inflate prefetch record skip cache_read cache_block; do
-    cp_plugins stream_filter "lib${n}_plugin.so"
-done
+cp_plugins stream_filter libinflate_plugin.so libprefetch_plugin.so librecord_plugin.so \
+    libskip_plugin.so libcache_read_plugin.so libcache_block_plugin.so
 # control — dummy interface (VLC needs at least one)
 cp_plugins control libdummy_plugin.so
 
-# Core plugins the engine cannot do without: fail the build rather than ship a silent player.
-for need in access/libimem_plugin.so demux/libmp4_plugin.so audio_output/libpulse_plugin.so; do
-    if [ ! -f "$P/$need" ] && [ ! -f "$P/${need/libpulse/libalsa}" ]; then
-        echo "error: required VLC plugin $need was not found under $SRC" >&2
-        exit 1
-    fi
+# Plugins the engine cannot do without: fail the build rather than ship a silent player.
+# (PulseAudio or ALSA: one of the two outputs is enough.)
+missing=0
+for need in access/libimem_plugin.so demux/libmp4_plugin.so codec/libavcodec_plugin.so \
+            video_output/libvmem_plugin.so video_chroma/libswscale_plugin.so; do
+    [ -f "$P/$need" ] || { echo "error: required VLC plugin $need was not found under $SRC" >&2; missing=1; }
 done
+if [ ! -f "$P/audio_output/libpulse_plugin.so" ] && [ ! -f "$P/audio_output/libalsa_plugin.so" ]; then
+    echo "error: neither VLC audio output (pulse, alsa) was found under $SRC" >&2; missing=1
+fi
+[ "$missing" = 0 ] || exit 1
 
-# FFmpeg libraries matching this VLC's plugins, when third_party/ffmpeg (FFmpeg 9) does not: built by
-# scripts/build-vlc-ffmpeg.sh. They go next to libvlc, which LD_LIBRARY_PATH already covers.
+# The FFmpeg libraries matching this VLC's plugins go next to libvlc, which the engine's
+# LD_LIBRARY_PATH covers.
 if [ -n "${ADAM_VLC_FFMPEG_LIBDIR:-}" ]; then
     cp -a "$ADAM_VLC_FFMPEG_LIBDIR"/lib*.so.* "$DEST/"
 fi
 
-# Libraries the plugins link that other distros (and the Flatpak runtime) do not provide. The
-# FFmpeg libraries are not among them: they ship in third_party/ffmpeg (a minimal build whose
-# sonames match these plugins) and reach VLC through LD_LIBRARY_PATH.
+# Libraries the plugins link that other distributions do not provide.
 for lib in libvlc_pulse.so.0 libsoxr.so.0 libdvbpsi.so.10 libaribb24.so.0 liba52.so.0; do
     real=""
     for d in "$LIBDIR" "$LIBDIR/vlc"; do   # libvlc_pulse lives in the vlc subdirectory
@@ -103,38 +132,37 @@ for lib in libvlc_pulse.so.0 libsoxr.so.0 libdvbpsi.so.10 libaribb24.so.0 liba52
     fi
 done
 
-# Every library a bundled plugin links must resolve inside the bundle or be a library every
-# system has. FFmpeg and the support libraries above resolving from /usr/lib would work here and
-# fail on the next machine, so insist they come from the bundle.
-FFLIB="$REPO/third_party/ffmpeg/lib"
-[ -d "$FFLIB" ] || { echo "error: $FFLIB is missing (git lfs pull?)" >&2; exit 1; }
+# Every FFmpeg library a bundled plugin links must resolve inside the bundle: resolving from
+# /usr/lib works on the build machine and fails on the next one.
 bad=0
-for plug in "$P/codec/libavcodec_plugin.so" "$P/demux/libavformat_plugin.so" "$P/audio_output/libpulse_plugin.so"; do
-    [ -f "$plug" ] || continue
-    out="$(LD_LIBRARY_PATH="$DEST:$FFLIB" ldd "$plug" 2>/dev/null)"
-    for dep in libavcodec libavformat libavutil libvlc_pulse; do
+for plug in codec/libavcodec_plugin.so demux/libavformat_plugin.so video_chroma/libswscale_plugin.so \
+            audio_output/libpulse_plugin.so; do
+    [ -f "$P/$plug" ] || continue
+    out="$(LD_LIBRARY_PATH="$DEST${FFLIB:+:$FFLIB}" ldd "$P/$plug" 2>/dev/null)"
+    for dep in libavcodec libavformat libavutil libswscale libswresample libvlc_pulse; do
         line="$(grep "^[[:space:]]*$dep\." <<<"$out" || true)"
         [ -z "$line" ] && continue
-        case "$line" in *"$DEST"/*|*"$FFLIB"/*) ;; *) echo "error: $(basename "$plug") resolves $dep outside the bundle: $line" >&2; bad=1 ;; esac
+        case "$line" in
+            *"$DEST"/*) ;;
+            *) if [ -z "$FFLIB" ] || [[ "$line" != *"$FFLIB"/* ]]; then
+                   echo "error: $(basename "$plug") resolves $dep outside the bundle: $line" >&2; bad=1
+               fi ;;
+        esac
     done
 done
 [ "$bad" = 0 ] || exit 1
 
-# Nothing bundled may need a newer glibc than the other packaged binaries (2.38 by default; release builds
-# on Ubuntu 22.04 set ADAM_MAX_GLIBC=2.35): a library copied from a rolling distro can require symbols that
-# older systems and the Flatpak runtime lack.
+# Nothing bundled may need a newer glibc than the rest of the package: a library copied from a
+# rolling distribution can require symbols that older systems lack.
 MAX_GLIBC="${ADAM_MAX_GLIBC:-2.38}"
-over=0
-while IFS= read -r f; do
-    v="$(objdump -T "$f" 2>/dev/null | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1)"
-    [ -z "$v" ] && continue
-    if [ "$(printf '%s\n%s\n' "$MAX_GLIBC" "$v" | sort -V | tail -1)" != "$MAX_GLIBC" ]; then
-        echo "error: ${f#$DEST/} needs GLIBC_$v (limit $MAX_GLIBC): do not bundle it" >&2; over=1
-    fi
-done < <(find "$DEST" -type f \( -name '*.so' -o -name '*.so.*' \))
-[ "$over" = 0 ] || exit 1
+if [ "$MAX_GLIBC" != none ] && ! report="$("$REPO/scripts/check-glibc.sh" "$DEST" "$MAX_GLIBC")"; then
+    grep FAIL <<<"$report" >&2
+    exit 1
+fi
 
-# Regenerate the plugin cache so VLC does not scan on every start.
-vlc-cache-gen "$P" 2>/dev/null || true
+# The plugin cache, so VLC does not scan the plugins on every start.
+for gen in "$LIBDIR/vlc/vlc-cache-gen" "$(command -v vlc-cache-gen || true)"; do
+    if [ -x "$gen" ]; then "$gen" "$P" 2>/dev/null || true; break; fi
+done
 
 echo "VLC bundled: $(du -sh "$DEST" | cut -f1)"

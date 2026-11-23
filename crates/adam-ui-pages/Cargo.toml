@@ -1,0 +1,39 @@
+[package]
+name = "adam-ui-pages"
+description = "The page area of Adam's UI: one view per catalog and library route."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+adam-ampapi = { path = "../adam-ampapi" }
+adam-app = { path = "../adam-app" }
+adam-desktop = { path = "../adam-desktop" }
+adam-player = { path = "../adam-player" }
+adam-ui = { path = "../adam-ui" }
+futures.workspace = true
+gpui.workspace = true
+gpui_platform = { workspace = true, features = ["wayland", "x11"] }
+tokio.workspace = true
+tracing.workspace = true
+
+[features]
+# gpui's test platform for headless view tests: `cargo test -p adam-ui-pages --features test-support`.
+test-support = ["gpui/test-support", "gpui_platform/test-support", "adam-ui/test-support"]
+
+[dev-dependencies]
+# The example plays both roles of the `adam` binary: the window and `<exe> engine …`.
+adam-engine = { path = "../adam-engine" }
+anyhow.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+tempfile = "3"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "tracing-log"] }
+
+[[example]]
+name = "pages"
+path = "examples/pages/main.rs"

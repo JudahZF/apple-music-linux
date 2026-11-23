@@ -1,0 +1,29 @@
+[package]
+name = "adam-apple"
+description = "Apple Music media provider: catalog to HLS to playable sessions."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+adam-ampapi = { path = "../adam-ampapi" }
+adam-core = { path = "../adam-core" }
+adam-fairplay = { path = "../adam-fairplay" }
+adam-hls = { path = "../adam-hls" }
+adam-streams = { path = "../adam-streams" }
+adam-widevine = { path = "../adam-widevine" }
+async-trait.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+wiremock = "0.6"

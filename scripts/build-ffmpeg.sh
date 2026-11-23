@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# build-ffmpeg.sh — regenerates third_party/ffmpeg, the prebuilt minimal FFmpeg that every
-# package bundles. Normal builds do NOT run this: the result is committed (Git LFS) and the
-# packaging scripts just copy it. Run it only to upgrade FFmpeg or change the component list.
+# build-ffmpeg.sh — regenerates third_party/ffmpeg, the prebuilt minimal FFmpeg that the x86-64
+# packages bundle (scripts/build-package.sh). Normal builds do NOT run this: the result is committed
+# (Git LFS) and the packaging scripts just copy it. Run it only to upgrade FFmpeg or change the
+# component list.
 #
-# It is FFmpeg 9.0.2 built from the official source, inside the freedesktop SDK, as an LGPL build, with only what the app
-# uses, in two roles:
-#   - bin/ffmpeg  the engine's music-video remux, export and tagging runs
+# It is FFmpeg built from the official source, inside the freedesktop SDK, as an LGPL build, with only
+# what the app uses, in two roles:
+#   - bin/ffmpeg  the engine's music-video downloads, FLAC conversion and tagging runs
 #   - lib/        libavcodec/libavformat/libavutil... — the shared libraries VLC's bundled
-#                 libavcodec plugin loads (ALAC and AAC decode). The plugin was linked against
-#                 these exact sonames (libavcodec.so.63, libavutil.so.61, libavformat.so.63),
-#                 which no other prebuilt FFmpeg provides.
+#                 avcodec, avformat and swscale plugins load (ALAC, AAC and H.264 decode) when the
+#                 package is built on a rolling distribution whose VLC links these sonames
+#                 (libavcodec.so.63, libavutil.so.61, libavformat.so.63). On older distributions
+#                 scripts/build-vlc-ffmpeg.sh builds the matching ones instead.
 # No external codec libraries are linked (--disable-autodetect), so there is nothing else to
 # bundle. HEVC-to-H.264 transcoding needs libx264 and is therefore not available; the app
 # stream-copies H.264, which is what it asks Apple for.
@@ -24,8 +26,28 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-. "$REPO/scripts/ffmpeg-config.sh"   # pinned source + the component list, shared with build-ffmpeg-windows.sh
-VERSION=$FFMPEG_VERSION SHA256=$FFMPEG_SHA256 URL=$FFMPEG_URL
+
+VERSION=9.0.2
+SHA256=8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
+URL="https://ffmpeg.org/releases/ffmpeg-$VERSION.tar.xz"
+
+# An LGPL build with only what the app uses; --disable-autodetect keeps external codec libraries out.
+# shellcheck disable=SC2054 # the commas are configure's list syntax
+FFMPEG_FLAGS=(
+    --disable-autodetect --enable-zlib
+    --disable-everything --disable-doc --disable-debug --disable-static --enable-shared
+    --disable-network --disable-avdevice
+    --disable-ffplay --disable-ffprobe --enable-ffmpeg
+    --enable-small
+    --enable-protocol=file,pipe
+    --enable-demuxer=mov,srt,flac,aac,mp3,wav,ac3,eac3
+    --enable-muxer=mp4,mov,ipod,flac,null
+    --enable-decoder=alac,aac,aac_latm,flac,mp3,mp3float,ac3,eac3,opus,vorbis,h264,srt,subrip,movtext,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le
+    --enable-encoder=flac,aac,movtext,pcm_s16le,pcm_s24le
+    --enable-parser=aac,aac_latm,ac3,flac,mpegaudio,h264,hevc,opus,vorbis
+    --enable-bsf=aac_adtstoasc,extract_extradata,null
+    --enable-filter=abuffer,abuffersink,buffer,buffersink,aformat,aresample,anull,null,format,scale
+)
 WORK="$REPO/.ffmpeg-build"
 OUT="$REPO/third_party/ffmpeg"
 JOBS="$(nproc 2>/dev/null || echo 4)"
@@ -45,7 +67,7 @@ cd "$WORK/src"
 STAGE="$WORK/stage"
 rm -rf "$STAGE"
 
-CONFIGURE_FLAGS=(--prefix="$STAGE" "${FFMPEG_COMMON_FLAGS[@]}" --enable-pic)
+CONFIGURE_FLAGS=(--prefix="$STAGE" "${FFMPEG_FLAGS[@]}" --enable-pic)
 
 # quoted so a prefix containing spaces survives the trip into the sandbox
 BUILD_CMD="./configure $(printf '%q ' "${CONFIGURE_FLAGS[@]}") && make -j$JOBS && make install"
@@ -66,7 +88,9 @@ cp -a "$STAGE"/lib/lib*.so.* "$OUT/lib/"   # soname links and real files; no unv
 strip --strip-unneeded "$OUT/bin/ffmpeg" "$OUT"/lib/*.so.* 2>/dev/null || true
 # Find the bundled libraries next to the binary, and each library next to its siblings,
 # whatever LD_LIBRARY_PATH says.
+# shellcheck disable=SC2016 # $ORIGIN is for the dynamic linker, not the shell
 patchelf --set-rpath '$ORIGIN/../lib' "$OUT/bin/ffmpeg"
+# shellcheck disable=SC2016
 for f in "$OUT"/lib/*.so.*.*; do patchelf --set-rpath '$ORIGIN' "$f"; done
 cp COPYING.LGPLv2.1 "$OUT/COPYING.LGPLv2.1"
 cat > "$OUT/README.md" <<EOT

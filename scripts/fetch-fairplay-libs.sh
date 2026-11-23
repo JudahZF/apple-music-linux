@@ -7,7 +7,8 @@
 #
 #   --dest   where the libraries go (default: Adam's config dir,
 #            ${XDG_CONFIG_HOME:-~/.config}/adam/drm/rootfs/system/lib64)
-#   --lock   the pinned source/checksum list (default: next to this script)
+#   --lock   the pinned source/checksum list (default: next to this script). Its `arch` line
+#            names the CPU the libraries are for (no line: x86_64); another CPU is refused.
 #   --stubs  directory holding our libandroid/libOpenSLES/libdl stubs
 #            (default: android-stubs next to this script)
 #
@@ -28,7 +29,7 @@ while [ $# -gt 0 ]; do
         --lock)  LOCK="$2"; shift 2 ;;
         --stubs) STUBS="$2"; shift 2 ;;
         --quiet) QUIET=1; shift ;;
-        -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "fetch-fairplay-libs: unknown option $1" >&2; exit 2 ;;
     esac
 done
@@ -37,6 +38,17 @@ say() { [ "$QUIET" = 1 ] || echo "$@"; }
 err() { echo "fetch-fairplay-libs: $*" >&2; }
 
 [ -r "$LOCK" ] || { err "lock file $LOCK not found"; exit 1; }
+
+# Apple's libraries are per CPU: installing another CPU's set would only fail later, inside the
+# engine. drm/fairplay-libs.lock (x86-64) predates the `arch` line.
+lock_arch=$(sed -n 's/^arch[[:space:]]\{1,\}//p' "$LOCK" | head -n 1)
+lock_arch=${lock_arch:-x86_64}
+host_arch=$(uname -m)
+if [ "$lock_arch" != "$host_arch" ]; then
+    err "$LOCK lists $lock_arch libraries, but this machine is $host_arch; nothing installed"
+    err "pass the lock for $host_arch with --lock (in a checkout: drm/fairplay-libs.lock is x86_64, packaging/fairplay-libs-aarch64.lock is aarch64)"
+    exit 1
+fi
 
 if command -v sha256sum >/dev/null 2>&1; then
     sha256() { sha256sum "$1" | cut -d' ' -f1; }

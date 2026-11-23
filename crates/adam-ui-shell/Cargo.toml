@@ -1,0 +1,34 @@
+[package]
+name = "adam-ui-shell"
+description = "Adam's main window: frame, rail, deck, queue, Now Playing, sign-in, windows and start-up."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# The `video` scenario writes a test pattern into a frame ring.
+adam-framering = { path = "../adam-framering", optional = true }
+adam-ampapi = { path = "../adam-ampapi" }
+adam-app = { path = "../adam-app" }
+adam-desktop = { path = "../adam-desktop" }
+adam-player = { path = "../adam-player" }
+adam-ui = { path = "../adam-ui" }
+futures.workspace = true
+gpui.workspace = true
+gpui_platform = { workspace = true, features = ["wayland", "x11"] }
+reqwest.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "env-filter", "fmt", "std", "tracing-log"] }
+
+[features]
+# gpui's test platform for headless view tests: `cargo test -p adam-ui-shell --features test-support`.
+test-support = ["gpui/test-support", "gpui_platform/test-support", "adam-ui/test-support"]
+# `--scenario NAME`: scripted runs for screenshots and the AT-SPI check. Not in a release build.
+scenario = ["dep:adam-framering"]

@@ -1,19 +1,23 @@
 #!/bin/sh
 # Adam — self-extracting installer
-# Usage: ./adam.run [--force] [--system] [--no-lossless] [--uninstall]
+# Usage: ./adam-<arch>.run [--force] [--system] [--no-lossless] [--uninstall]
 #
-# --force        reinstall even if already at this version
-# --system       install to /opt/adam + /usr/local/bin (needs sudo)
+# --force        reinstall even if this build is already installed
+# --system       install to /opt/adam + /usr/local/bin (run it with sudo)
 # --no-lossless  skip downloading Apple's FairPlay libraries (lossless/ALAC stays off)
-# --uninstall    remove a previous installation
+# --uninstall    remove a previous installation (with --system: the system-wide one)
+#
+# Your settings, Apple session and caches (~/.config/adam, ~/.cache/adam) are never touched:
+# not by an install, an upgrade (also from the older Electron-based Adam) or an uninstall.
 
-VERSION="__VERSION__"
+BUILD="__VERSION__ (__COMMIT__)"
+ARCH="__ARCH__"
 
 # ── defaults (user install) ───────────────────────────────────────────────────
+# The same paths as every earlier installer, so an upgrade replaces the old install in place.
 INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/lib}/adam"
 BIN_DIR="$HOME/.local/bin"
-DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/256x256/apps"
+SHARE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}"
 
 FORCE=0
 SYSTEM=0
@@ -23,35 +27,41 @@ LOSSLESS=1
 # ── launcher directory ───────────────────────────────────────────────────────
 # The command is installed as `adam`. The standard home for user executables is
 # $HOME/.local/bin (XDG Base Directory spec 0.8, systemd file-hierarchy(7)); putting it on PATH
-# is the distribution's job, so this installer does not edit shell startup files: the shell and
-# how it is configured are the user's business, and the installer cannot know them. The one
+# is the distribution's job, so this installer does not edit shell startup files. The one
 # adaptation is to the user's *current* PATH: if ~/.local/bin is not on it but ~/bin (the older
 # convention) is, the launcher goes there so the command works immediately.
 on_path() { case ":$PATH:" in *":$1:"*) return 0 ;; esac; return 1; }
 
 for arg in "$@"; do
     case "$arg" in
-        --force)    FORCE=1 ;;
-        --system)   SYSTEM=1 ;;
-        --uninstall) UNINSTALL=1 ;;
+        --force)       FORCE=1 ;;
+        --system)      SYSTEM=1 ;;
+        --uninstall)   UNINSTALL=1 ;;
         --no-lossless) LOSSLESS=0 ;;
         --help|-h)
-            echo "Usage: $0 [--force] [--system] [--no-lossless] [--uninstall]"
+            sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
-        *) echo "Unknown option: $arg"; exit 1 ;;
+        *) echo "Unknown option: $arg (see --help)"; exit 1 ;;
     esac
 done
 
 if [ "$SYSTEM" = "1" ]; then
     INSTALL_DIR="/opt/adam"
     BIN_DIR="/usr/local/bin"
-    DESKTOP_DIR="/usr/share/applications"
-    ICON_DIR="/usr/share/icons/hicolor/256x256/apps"
+    SHARE_DIR="/usr/share"
 fi
+DESKTOP_DIR="$SHARE_DIR/applications"
+ICON_ROOT="$SHARE_DIR/icons/hicolor"
+ICON_SIZES="128x128 256x256 512x512"
 
 if [ "$SYSTEM" != "1" ] && ! on_path "$BIN_DIR" && [ -d "$HOME/bin" ] && [ -w "$HOME/bin" ] && on_path "$HOME/bin"; then
     BIN_DIR="$HOME/bin"
 fi
+
+refresh_caches() {
+    update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
+    gtk-update-icon-cache -f -t "$ICON_ROOT" 2>/dev/null || true
+}
 
 # ── uninstall ─────────────────────────────────────────────────────────────────
 if [ "$UNINSTALL" = "1" ]; then
@@ -62,24 +72,28 @@ if [ "$UNINSTALL" = "1" ]; then
             rm -f "$d/adam"
         fi
     done
-    rm -f  "$DESKTOP_DIR/adam.desktop"
-    rm -f  "$ICON_DIR/adam.png"
-    update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
+    rm -f "$DESKTOP_DIR/adam.desktop"
+    for size in $ICON_SIZES; do rm -f "$ICON_ROOT/$size/apps/adam.png"; done
+    rm -f "$ICON_ROOT/scalable/apps/adam.svg"
+    refresh_caches
     echo "Uninstalled Adam."
+    echo "Your settings and caches are still in ~/.config/adam and ~/.cache/adam; delete them to remove everything."
     exit 0
 fi
 
-# ── version guard ─────────────────────────────────────────────────────────────
-if [ "$FORCE" = "0" ] && [ -f "$INSTALL_DIR/.version" ]; then
-    installed=$(cat "$INSTALL_DIR/.version")
-    if [ "$installed" = "$VERSION" ]; then
-        echo "Adam $VERSION is already installed."
-        echo "Run: adam   or pass --force to reinstall."
-        exit 0
-    fi
+# ── checks ────────────────────────────────────────────────────────────────────
+host_arch=$(uname -m)
+if [ "$host_arch" != "$ARCH" ]; then
+    echo "Error: this installer is for $ARCH, but this machine is $host_arch."
+    exit 1
 fi
 
-# ── zstd check ───────────────────────────────────────────────────────────────
+if [ "$FORCE" = "0" ] && [ -f "$INSTALL_DIR/.version" ] && [ "$(cat "$INSTALL_DIR/.version")" = "$BUILD" ]; then
+    echo "Adam $BUILD is already installed."
+    echo "Run: adam   or pass --force to reinstall."
+    exit 0
+fi
+
 if ! command -v zstd >/dev/null 2>&1; then
     echo "Error: zstd is required for installation."
     echo "  Debian/Ubuntu:  sudo apt install zstd"
@@ -89,95 +103,92 @@ if ! command -v zstd >/dev/null 2>&1; then
     exit 1
 fi
 
+parent=$(dirname "$INSTALL_DIR")
+mkdir -p "$parent" 2>/dev/null
+if [ ! -w "$parent" ]; then
+    echo "Error: cannot write to $parent$([ "$SYSTEM" = 1 ] && echo ' (run with sudo for --system)')."
+    exit 1
+fi
+
 # ── extract ───────────────────────────────────────────────────────────────────
-# Payload starts after the __PAYLOAD_BELOW__ sentinel line.
-# Byte-offset method (binary-safe): count bytes through that line, then tail -c.
+# Into a new directory beside the install, which then replaces the old one whole: nothing of
+# an earlier version (the Electron app's resources/, locales/, chrome-sandbox ...) survives,
+# and a failed extraction leaves the old install as it was.
+# Payload starts after the __PAYLOAD_BELOW__ sentinel line (byte offset, binary-safe).
 SENTINEL_LINE=$(grep -an '^__PAYLOAD_BELOW__$' "$0" | tail -1 | cut -d: -f1)
 HEADER_BYTES=$(head -n "$SENTINEL_LINE" "$0" | wc -c)
 PAYLOAD_START=$((HEADER_BYTES + 1))
 
-echo "Installing Adam $VERSION..."
-mkdir -p "$INSTALL_DIR"
+NEW_DIR="$INSTALL_DIR.new.$$"
+OLD_DIR="$INSTALL_DIR.old.$$"
+trap 'rm -rf "$NEW_DIR"' EXIT
+rm -rf "$NEW_DIR"
+mkdir -p "$NEW_DIR"
 
-tail -c +"$PAYLOAD_START" "$0" \
-    | zstd -d --long=31 -q \
-    | tar -x --strip-components=1 -C "$INSTALL_DIR"
-
-# ── permissions ───────────────────────────────────────────────────────────────
-chmod +x \
-    "$INSTALL_DIR/adam" \
-    "$INSTALL_DIR/chrome_crashpad_handler" \
-    "$INSTALL_DIR/resources/engine"
-
-# chrome-sandbox: needs setuid root for the Chromium sandbox.
-# Without it we fall back to --no-sandbox in the launcher (safe for local use).
-if [ "$SYSTEM" = "1" ] && [ "$(id -u)" = "0" ]; then
-    chown root:root "$INSTALL_DIR/chrome-sandbox"
-    chmod 4755      "$INSTALL_DIR/chrome-sandbox"
+echo "Installing Adam $BUILD..."
+if ! tail -c +"$PAYLOAD_START" "$0" | zstd -d --long=31 -q | tar -x --strip-components=1 -C "$NEW_DIR"; then
+    echo "Error: the installer is damaged (extraction failed); nothing was changed."
+    exit 1
 fi
+echo "$BUILD" > "$NEW_DIR/.version"
+
+if [ -d "$INSTALL_DIR" ]; then
+    # Builds before the session moved to ~/.config/adam kept it in the install directory;
+    # Adam copies it from there once (`<install>/drm/files`), so it moves with the upgrade.
+    if [ -d "$INSTALL_DIR/drm" ] && [ ! -e "$NEW_DIR/drm" ]; then
+        cp -a "$INSTALL_DIR/drm" "$NEW_DIR/drm"
+    fi
+    [ -e "$INSTALL_DIR/resources/app.asar" ] && echo "Replacing the Electron-based Adam in $INSTALL_DIR."
+    mv "$INSTALL_DIR" "$OLD_DIR" || { echo "Error: cannot move the old install aside."; exit 1; }
+fi
+if ! mv "$NEW_DIR" "$INSTALL_DIR"; then
+    [ -d "$OLD_DIR" ] && mv "$OLD_DIR" "$INSTALL_DIR"
+    echo "Error: cannot put the new install in place; the old one is unchanged."
+    exit 1
+fi
+rm -rf "$OLD_DIR"
 
 # ── launcher ──────────────────────────────────────────────────────────────────
 mkdir -p "$BIN_DIR"
 cat > "$BIN_DIR/adam" <<EOF
 #!/bin/sh
-exec "$INSTALL_DIR/adam" --no-sandbox "\$@"
+exec "$INSTALL_DIR/adam" "\$@"
 EOF
 chmod +x "$BIN_DIR/adam"
 
-# ── desktop entry + icon ──────────────────────────────────────────────────────
-mkdir -p "$DESKTOP_DIR" "$ICON_DIR"
+# ── desktop entry + icons ─────────────────────────────────────────────────────
+# Icons go to the hicolor theme (desktops that look Adam up by name: tray, MPRIS); the desktop
+# entry names its icon by absolute path, which no stale icon cache can hide.
+for size in $ICON_SIZES; do
+    mkdir -p "$ICON_ROOT/$size/apps"
+    cp "$INSTALL_DIR/share/icons/hicolor/$size/apps/adam.png" "$ICON_ROOT/$size/apps/adam.png"
+done
+mkdir -p "$ICON_ROOT/scalable/apps"
+cp "$INSTALL_DIR/share/icons/hicolor/scalable/apps/adam.svg" "$ICON_ROOT/scalable/apps/adam.svg"
 
-# Resolve the best app icon: bundled icon.png > tray-icon.png fallback
-APP_ICON="$INSTALL_DIR/resources/icon.png"
-if [ ! -f "$APP_ICON" ]; then
-    APP_ICON="$INSTALL_DIR/resources/tray-icon.png"
-fi
-
-# Copy to hicolor theme dir (for DEs that resolve icon names)
-cp "$APP_ICON" "$ICON_DIR/adam.png" 2>/dev/null || true
-gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
-
-# Use absolute path for Icon= — bypasses icon theme cache entirely,
-# guaranteed to show the correct icon regardless of DE cache state.
-# (Freedesktop spec: absolute paths are used directly, no theme lookup.)
-cat > "$DESKTOP_DIR/adam.desktop" <<EOF
-[Desktop Entry]
-Name=Adam
-GenericName=Music Player
-Comment=Apple Music desktop client for Linux and Windows
-Exec=$INSTALL_DIR/adam --no-sandbox %u
-Icon=$APP_ICON
-Type=Application
-Categories=AudioVideo;Music;Network;
-StartupWMClass=Adam
-MimeType=x-scheme-handler/adam;x-scheme-handler/music;x-scheme-handler/musics;x-scheme-handler/itms;x-scheme-handler/itmss;x-scheme-handler/itunes;x-scheme-handler/itals;x-scheme-handler/italss;x-scheme-handler/itvls;x-scheme-handler/itvlss;x-scheme-handler/itsradio;x-scheme-handler/itunesradio;x-scheme-handler/daap;x-scheme-handler/itpc;x-scheme-handler/ame;
-Keywords=music;apple;streaming;
-EOF
-
-update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
-xdg-mime default adam.desktop x-scheme-handler/adam 2>/dev/null || true
+mkdir -p "$DESKTOP_DIR"
+sed -e "s|^Exec=.*|Exec=\"$INSTALL_DIR/adam\" %u|" \
+    -e "s|^Icon=.*|Icon=$INSTALL_DIR/share/icons/hicolor/512x512/apps/adam.png|" \
+    "$INSTALL_DIR/share/applications/adam.desktop" > "$DESKTOP_DIR/adam.desktop"
+refresh_caches
+# adam:// is always Adam's; Apple's schemes are claimed only from Settings → Links.
+[ "$SYSTEM" = "1" ] || xdg-mime default adam.desktop x-scheme-handler/adam 2>/dev/null || true
 
 # ── FairPlay libraries (lossless) ─────────────────────────────────────────────
-# Apple's Android FairPlay libraries cannot be redistributed with Adam, so they are
-# downloaded here from pinned sources and checked against SHA-256 sums
-# (resources/fairplay-libs.lock). They live per user, so a system-wide install
-# leaves them to each user's first launch, which fetches them automatically.
-FETCH="$INSTALL_DIR/resources/fetch-fairplay-libs.sh"
-if [ "$LOSSLESS" = "1" ] && [ "$SYSTEM" != "1" ] && [ -f "$FETCH" ]; then
+# Apple's Android FairPlay libraries cannot be redistributed with Adam, so they are downloaded
+# here from pinned sources and checked against SHA-256 sums (fairplay-libs.lock). They live per
+# user, so a system-wide install leaves them to each user's first launch, which fetches them.
+FETCH="$INSTALL_DIR/fetch-fairplay-libs.sh"
+if [ "$LOSSLESS" = "1" ] && [ "$SYSTEM" != "1" ]; then
     echo "Downloading Apple's FairPlay libraries for lossless playback (~65 MB)..."
-    if sh "$FETCH"; then
-        :
-    else
+    if ! sh "$FETCH"; then
         echo "Lossless playback is off for now; Adam will retry on its next launch,"
         echo "or run: sh \"$FETCH\""
     fi
 fi
 
-# ── version stamp ─────────────────────────────────────────────────────────────
-echo "$VERSION" > "$INSTALL_DIR/.version"
-
 echo ""
-echo "Adam $VERSION installed to $INSTALL_DIR"
+echo "Adam $BUILD installed to $INSTALL_DIR"
 echo "Launcher: $BIN_DIR/adam"
 
 if ! on_path "$BIN_DIR"; then
@@ -190,4 +201,5 @@ if ! on_path "$BIN_DIR"; then
 fi
 
 exit 0
+# shellcheck disable=SC2317 # the sentinel before the payload, never run
 __PAYLOAD_BELOW__

@@ -1,198 +1,51 @@
 #!/usr/bin/env bash
-# build-installer.sh — builds dist/adam.run (the version is inside, not in the name)
+# build-installer.sh — builds dist/adam-<arch>.run, the self-extracting installer (the version is
+# inside, not in the name): scripts/installer-header.sh followed by the package directory of
+# scripts/build-package.sh as a zstd-compressed tar.
 #
-# Every component is rebuilt from source on each run, then the packaged result is checked
-# against the fresh build, so the installer cannot silently carry a stale engine, DRM
-# library or renderer bundle:
-#
-#   1. libdrm_client.so   make -C drm             (C client, OpenSSL + libcurl only)
-#   2. engine             scripts/build-engine.sh (Go, CGO, adamplay_backend)
-#   3. renderer bundles   scripts/build-renderer.sh
-#   4. VLC subset         scripts/bundle-vlc.sh (+ the prebuilt minimal FFmpeg, third_party/ffmpeg)
-#   5. electron-builder   --dir → linux-unpacked
-#   6. verification       packaged files byte-equal to the fresh build
-#   7. self-extracting archive (tar | zstd)
-#
-# Needs: node, go (CGO), gcc, make, zstd, electron/node_modules (electron-builder), the
-# system VLC.
-#
-# Usage:
-#   ./scripts/build-installer.sh           # full build
-#   ./scripts/build-installer.sh --skip-eb # reuse electron/dist/linux-unpacked, refreshing
-#                                          # the engine, libraries, bundles and VLC in it
-#   ./scripts/build-installer.sh --clean   # afterwards delete electron/dist/linux-unpacked
+# Usage: scripts/build-installer.sh [--local] [--skip-build]
+#   --local       passed to build-package.sh: an installer for this machine only
+#   --skip-build  pack the existing dist/adam-<arch>/ instead of building it again
+# Every other input is build-package.sh's (ADAM_HYBRIS_DIR, ADAM_VLC_*, ADAM_MAX_GLIBC).
+# Needs: zstd, tar, and what build-package.sh needs.
 
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-ELECTRON="$REPO/electron"
-DRM="$REPO/drm"
-SKIP_EB=0
-CLEAN=0
+ARCH="$(uname -m)"
+PKG="$REPO/dist/adam-$ARCH"
+OUTFILE="$REPO/dist/adam-$ARCH.run"
+build_args=()
+SKIP_BUILD=0
 for arg in "$@"; do
     case "$arg" in
-        --skip-eb) SKIP_EB=1 ;;
-        --clean)   CLEAN=1 ;;
-        *) echo "unknown option: $arg" >&2; exit 2 ;;
+        --local)      build_args+=(--local) ;;
+        --skip-build) SKIP_BUILD=1 ;;
+        -h|--help)    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "unknown option: $arg (see --help)" >&2; exit 2 ;;
     esac
 done
 
 die() { echo "Error: $*" >&2; exit 1; }
-
-# ── version ───────────────────────────────────────────────────────────────────
-VERSION=$(node -p "require('$ELECTRON/package.json').version")
-COMMIT=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)
-if [ -n "$(git -C "$REPO" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
-    COMMIT="$COMMIT+dirty"
-fi
-STAGE="$REPO/.installer-stage"
-OUT="$REPO/dist"
-UNPACKED="$STAGE/linux-unpacked"
-# The staging copy is several hundred MB: remove it whether the build succeeds or fails.
-trap 'rm -rf "$STAGE" "$STAGE.manifest"' EXIT
-
-echo "Building Adam $VERSION ($COMMIT) installer..."
-
-# ── 0. pre-flight ─────────────────────────────────────────────────────────────
-echo "[0/7] Checking prerequisites..."
-for tool in node npx go gcc make zstd tar; do
+for tool in zstd tar; do
     command -v "$tool" >/dev/null 2>&1 || die "'$tool' is required but not installed"
 done
-[ -x "$ELECTRON/node_modules/.bin/electron-builder" ] || die "electron/node_modules missing — run 'npm install' in electron/"
 
-# A Git LFS pointer file is ~130 bytes of text, not a library: a clone made without
-# `git lfs pull` would otherwise package garbage.
-real_binary() { [ -s "$1" ] && ! head -c 64 "$1" | grep -q 'git-lfs'; }
-for f in "$ELECTRON/icon.png" "$REPO/assets/tray-icon.png" \
-         "$REPO/third_party/ffmpeg/bin/ffmpeg" "$REPO/third_party/ffmpeg/lib/libavcodec.so.63" \
-         "$DRM/libhybris-core.so" "$DRM/hybris-linker/q.so"; do
-    real_binary "$f" || die "$f is missing or an unresolved Git LFS pointer (run 'git lfs pull')"
-done
-
-# ── 1. DRM client library ─────────────────────────────────────────────────────
-echo "[1/7] Building libdrm_client.so and the Android stubs..."
-make -C "$DRM" libdrm_client.so android-stubs >/dev/null
-
-# ── 2. Go engine with in-process DRM (stripped) ──────────────────────────────
-# Built into electron/dist/resources, where electron-builder's extraResources picks up
-# the engine and libdrm_client.so (build-engine.sh copies the fresh library there too).
-echo "[2/7] Building Go engine (CGO + adamplay_backend)..."
-"$REPO/scripts/build-engine.sh" "$ELECTRON/dist/resources" -ldflags="-w -s" -trimpath
-
-# ── 3. Renderer bundles ───────────────────────────────────────────────────────
-echo "[3/7] Building renderer bundles..."
-"$REPO/scripts/build-renderer.sh"
-
-# ── 4. Bundled VLC ────────────────────────────────────────────────────────────
-echo "[4/7] Bundling VLC..."
-"$REPO/scripts/bundle-vlc.sh"
-
-# ── 5. electron-builder: produce linux-unpacked ───────────────────────────────
-RES_SRC="$ELECTRON/dist/resources"
-if [ "$SKIP_EB" = "0" ]; then
-    echo "[5/7] electron-builder --dir..."
-    # --dir produces linux-unpacked without packaging into an AppImage
-    (cd "$ELECTRON" && node_modules/.bin/electron-builder --linux dir)
-else
-    echo "[5/7] Skipping electron-builder (--skip-eb); refreshing the reused directory"
-    [ -d "$ELECTRON/dist/linux-unpacked" ] || die "electron/dist/linux-unpacked not found. Run without --skip-eb first."
-    R="$ELECTRON/dist/linux-unpacked/resources"
-    cp "$RES_SRC/engine" "$RES_SRC/libdrm_client.so" "$R/"
-    cp "$ELECTRON/icon.png" "$R/icon.png"
-    cp "$REPO/assets/tray-icon.png" "$R/tray-icon.png"
-    rm -rf "$R/vlc" && cp -r "$RES_SRC/vlc" "$R/vlc"
-    rm -rf "$R/ffmpeg" && cp -a "$REPO/third_party/ffmpeg" "$R/ffmpeg"
-    rm -rf "$R/hybris-linker" && cp -r "$DRM/hybris-linker" "$R/hybris-linker"
-    # the renderer bundles were refreshed in step 3 (build-renderer.sh updates this directory)
+if [ "$SKIP_BUILD" = 0 ]; then
+    "$REPO/scripts/build-package.sh" "${build_args[@]}" --out "$PKG"
 fi
-# electron-builder recreates linux-unpacked after build-renderer.sh refreshed it. Always ship fresh
-# external bundles: an upgrade extracts over an existing install, and main.mjs prefers these paths
-# over app.asar (including older copies left there).
-for b in engine-bundle.js engine-sse-bundle.js smart-cache-bundle.js vision-bundle.js; do
-    cp "$ELECTRON/$b" "$ELECTRON/dist/linux-unpacked/resources/$b"
-done
-rm -rf "$STAGE"
-mkdir -p "$STAGE"
-cp -r "$ELECTRON/dist/linux-unpacked" "$UNPACKED"
-RES="$UNPACKED/resources"
+[ -f "$PKG/BUILD_INFO" ] || die "$PKG is not a package directory (run without --skip-build)"
+info() { sed -n "s/^$1=//p" "$PKG/BUILD_INFO"; }
+[ "$(info arch)" = "$ARCH" ] || die "$PKG was built for $(info arch), not $ARCH"
 
-# ── 6. Verify the package against the fresh build ────────────────────────────
-echo "[6/7] Verifying package contents..."
-for f in engine libdrm_client.so \
-         vlc/libvlc.so.5 vlc/libvlccore.so.9 vlc/plugins vlc/libvlc_pulse.so.0 \
-         ffmpeg/bin/ffmpeg ffmpeg/lib/libavcodec.so.63 ffmpeg/lib/libavutil.so.61 ffmpeg/lib/libavformat.so.63 \
-         tray-icon.png icon.png app.asar \
-         fetch-fairplay-libs.sh fairplay-libs.lock \
-         android-stubs/libandroid.so android-stubs/libOpenSLES.so android-stubs/libdl.so \
-         hybris-linker/q.so; do
-    [ -e "$RES/$f" ] || die "packaged resources/$f missing — the installed app would not work"
-done
-[ ! -e "$RES/libdrm-native.so" ] || die "stale resources/libdrm-native.so is packaged (old wrapper library)"
-[ ! -e "$RES/libhybris-core.so" ] || die "stale resources/libhybris-core.so is packaged (it is embedded in libdrm_client.so)"
-[ ! -e "$RES/rootfs" ] || die "resources/rootfs is packaged: Apple's libraries must not ship, they are downloaded at install time"
+echo "Packing $OUTFILE (zstd -19 --long=31, a minute or two)..."
+sed -e "s/__VERSION__/$(info version)/g" -e "s/__COMMIT__/$(info commit)/g" -e "s/__ARCH__/$ARCH/g" \
+    "$REPO/scripts/installer-header.sh" > "$OUTFILE.part"
+# One top-level directory in the archive; the header extracts with --strip-components=1.
+tar -cf - -C "$(dirname "$PKG")" "$(basename "$PKG")" | zstd -19 --long=31 -T0 -q >> "$OUTFILE.part"
+chmod +x "$OUTFILE.part"
+mv -f "$OUTFILE.part" "$OUTFILE"
 
-same() { cmp -s "$1" "$2" || die "$3 in the package differs from the fresh build — stale copy"; }
-same "$RES_SRC/engine"           "$RES/engine"             "resources/engine"
-same "$ELECTRON/engine-bundle.js" "$RES/engine-bundle.js" "resources/engine-bundle.js"
-same "$DRM/libdrm_client.so"     "$RES/libdrm_client.so"   "resources/libdrm_client.so"
-same "$REPO/third_party/ffmpeg/bin/ffmpeg" "$RES/ffmpeg/bin/ffmpeg" "resources/ffmpeg/bin/ffmpeg"
-same "$REPO/third_party/ffmpeg/lib/libavcodec.so.63" "$RES/ffmpeg/lib/libavcodec.so.63" "resources/ffmpeg/lib/libavcodec.so.63"
-
-# The engine must actually link the DRM library (a build without the adamplay_backend tag has
-# no DRM and silently falls back to AAC-only), and find it next to itself.
-ldd "$RES/engine" 2>/dev/null | grep -q 'libdrm_client.so => /' \
-    || die "the packaged engine does not resolve libdrm_client.so (missing adamplay_backend tag or rpath)"
-
-# Renderer bundles: the copy inside app.asar (and any copy beside it, which main.mjs
-# prefers) must equal the freshly built file.
-ASAR="$ELECTRON/node_modules/.bin/asar"
-TMP="$(mktemp -d)"
-for b in engine-bundle.js engine-sse-bundle.js smart-cache-bundle.js vision-bundle.js; do
-    (cd "$TMP" && "$ASAR" extract-file "$RES/app.asar" "$b") || die "$b is missing from app.asar"
-    same "$ELECTRON/$b" "$TMP/$b" "$b in app.asar"
-    [ ! -e "$RES/$b" ] || same "$ELECTRON/$b" "$RES/$b" "resources/$b"
-done
-rm -rf "$TMP"
-
-printf 'version=%s\ncommit=%s\nbuilt=%s\n' "$VERSION" "$COMMIT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RES/BUILD_INFO"
-
-# ── 7. Post-process and pack the self-extracting archive ─────────────────────
-echo "[7/7] Optimizing and compressing (zstd -19 --long=31, ~2 min)..."
-
-# Keep only en-US locale — 54 locale files removed (~45 MB uncompressed)
-find "$UNPACKED/locales" -name "*.pak" ! -name "en-US.pak" -delete
-
-# Belt-and-suspenders: remove any win32/darwin prebuilds electron-builder left in asar.unpacked
-for plat in win32-x64 win32-arm64 darwin-x64 darwin-arm64; do
-    rm -rf "$UNPACKED/resources/app.asar.unpacked/node_modules/node-pty/prebuilds/$plat" 2>/dev/null || true
-done
-
-mkdir -p "$OUT"
-HEADER="$REPO/scripts/installer-header.sh"
-OUTFILE="$OUT/adam.run"
-# an older build named after its version would sit beside the new file and be mistaken for it
-rm -f "$OUT"/adam-*.run
-
-# Write header with version substituted
-sed "s/__VERSION__/$VERSION/g" "$HEADER" > "$OUTFILE"
-
-# Append payload: tar | zstd solid, strip-components=1 so install dir is flat
-tar -cf - -C "$STAGE" linux-unpacked \
-    | zstd -19 --long=31 -T0 -q \
-    >> "$OUTFILE"
-
-chmod +x "$OUTFILE"
-
-# ── cleanup ───────────────────────────────────────────────────────────────────
-rm -rf "$STAGE"
-if [ "$CLEAN" = 1 ]; then
-    # electron-builder's unpacked output is an intermediate: the .run holds everything in it.
-    rm -rf "$ELECTRON/dist/linux-unpacked" "$ELECTRON/dist/"builder-*.y*ml
-    echo "Removed electron/dist/linux-unpacked (--clean)"
-fi
-
-SIZE=$(du -sh "$OUTFILE" | cut -f1)
 echo ""
-echo "Done: $OUTFILE ($SIZE) — $VERSION ($COMMIT)"
+echo "Done: $OUTFILE ($(du -sh "$OUTFILE" | cut -f1)), Adam $(info version) ($(info commit)) for $ARCH"
 echo "Test: $OUTFILE --help"
-echo "      $OUTFILE --force"
