@@ -289,6 +289,63 @@ async fn unknown_key_fails_instead_of_emitting_ciphertext() {
     );
 }
 
+/// A dialer that counts the key refreshes the stream asks for.
+struct CountingRefresh {
+    inner: TcpDialer,
+    refreshes: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl adam_fairplay::CbcsDialer for CountingRefresh {
+    async fn dial_cbcs(&self, cancel: &CancellationToken) -> std::io::Result<adam_fairplay::DrmStream> {
+        self.inner.dial_cbcs(cancel).await
+    }
+
+    async fn refresh_keys(&self) -> std::io::Result<()> {
+        self.refreshes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+/// Apple's library can hand out an expired key as valid: the decryptor then returns bytes
+/// that are not audio, without an error. On an ALAC stream this is seen (the samples do not
+/// start like ALAC frames), fresh keys are requested and the fragment is decrypted again. If
+/// it is still not audio the stream fails; the bad samples are never written.
+#[tokio::test]
+async fn samples_that_are_not_alac_refresh_the_keys_and_are_not_emitted() {
+    let fp = FakeFairPlay::start(ADAM_ID, PREFETCH_KEY, track_keys(), None).await;
+    // The fixture is AAC: labelled ALAC, its correctly decrypted samples stand in for the
+    // output of a wrong key.
+    let mut file = data("cbcs_track.mp4");
+    let frma = file.windows(8).position(|w| w == b"frmamp4a").unwrap();
+    file[frma + 4..frma + 8].copy_from_slice(b"alac");
+    let (url, _) = http_server(200, file, Duration::ZERO).await;
+    let dialer = Arc::new(CountingRefresh { inner: TcpDialer(fp.addr.clone()), refreshes: Default::default() });
+    let src = CbcsSource::new(
+        ADAM_ID,
+        dialer.clone(),
+        reqwest::Client::new(),
+        &media(&url, &[PREFETCH_KEY, CONTENT_KEY]),
+        0,
+    );
+    let (res, out) = run(&src).await;
+
+    let Err(PipelineError::Other(e)) = res else {
+        panic!("the stream succeeded with samples that are not ALAC: {res:?}");
+    };
+    assert!(
+        matches!(
+            e.downcast_ref::<Error>(),
+            Some(Error::Decrypt { index: 0, source: alac::Error::WrongKey { .. } })
+        ),
+        "{e}"
+    );
+    assert_eq!(dialer.refreshes.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let mut r = &out[..];
+    let (_, offset) = alac::read_init_segment(&mut r).await.unwrap();
+    assert!(alac::read_next_fragment(&mut r, offset).await.unwrap().is_none(), "no fragment may be written");
+}
+
 /// A decryptor connection that dies mid-stream is redialed, the key in force is selected
 /// again, and the fragment is decrypted from its saved ciphertext: the output is unchanged.
 #[tokio::test]

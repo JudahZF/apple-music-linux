@@ -70,6 +70,13 @@ pub trait DrmBackend: Send + Sync + 'static {
         false
     }
 
+    /// Drops every key context, so sessions dialled afterwards get fresh keys. Called when a
+    /// key decrypted to garbage: Apple's library hands out an expired cached key as valid.
+    /// Sessions that are open end with a decrypt error and their clients dial again.
+    async fn refresh_keys(&self) -> Result<(), BackendError> {
+        Ok(())
+    }
+
     /// Registers where [`get_account`](Self::get_account) gets the account when there are no
     /// credential files: the web player's token.
     fn set_account_fallback(&self, _fallback: AccountFallback) {}

@@ -196,6 +196,9 @@ pub struct DeckTiming {
     /// `None` (or 0) before the first decoded sample.
     pub position_ms: Option<u64>,
     pub length_ms: Option<u64>,
+    /// The source has delivered all its data. libvlc's demuxer is then at the end of the
+    /// stream and its time stops, up to one fragment (about 15 s) before the audio ends.
+    pub source_ended: bool,
     /// The volume libvlc plays at now: follows the desktop mixer.
     pub volume: u8,
     pub muted: bool,

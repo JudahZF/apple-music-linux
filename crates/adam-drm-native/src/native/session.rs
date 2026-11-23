@@ -1274,6 +1274,15 @@ impl FairPlay {
         }
     }
 
+    /// Drops every key context and has Apple derive fresh keys (a new lease, then
+    /// `resetAllContexts`). For a key that decrypts to garbage: the library hands out an
+    /// expired cached key as if it were valid. Contexts opened before the call then fail with
+    /// [`DecryptError::StaleContext`]. Returns whether the prefetch context was rebuilt.
+    /// Blocks while Apple answers.
+    pub fn refresh_keys(&self) -> bool {
+        refresh_decrypt_ctx()
+    }
+
     /// Decrypts one sample in place with `NfcRKVnxuKZy04KWbdFu71Ou`
     /// (`hybris_backend_decrypt`). Only whole 16-byte blocks are touched; a sample shorter
     /// than one block is left as it is.

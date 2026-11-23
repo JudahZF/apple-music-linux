@@ -124,7 +124,7 @@ impl Deck for FakeDeck {
     }
     async fn timing(&self) -> DeckTiming {
         let st = self.st.lock().unwrap();
-        DeckTiming { position_ms: Some(Self::position(&st)), length_ms: Some(LENGTH_MS), volume: 100, muted: false }
+        DeckTiming { position_ms: Some(Self::position(&st)), length_ms: Some(LENGTH_MS), source_ended: false, volume: 100, muted: false }
     }
 }
 

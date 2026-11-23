@@ -711,6 +711,10 @@ impl CbcsDialer for DrmLink {
     fn in_process(&self) -> bool {
         self.0.in_process()
     }
+
+    async fn refresh_keys(&self) -> std::io::Result<()> {
+        self.0.refresh_keys().await.map_err(std::io::Error::other)
+    }
 }
 
 #[async_trait]

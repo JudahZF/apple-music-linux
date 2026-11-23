@@ -29,6 +29,12 @@ pub trait CbcsDialer: Send + Sync {
     fn in_process(&self) -> bool {
         false
     }
+
+    /// Asks the DRM backend for fresh keys, after a key decrypted to garbage (the backend
+    /// gave an expired key as valid). The next dial then opens new key contexts.
+    async fn refresh_keys(&self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// A [`CbcsDialer`] that connects to a TCP address (Go `DialerFromAddr`). Tests use it to

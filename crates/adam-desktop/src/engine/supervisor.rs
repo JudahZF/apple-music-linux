@@ -19,7 +19,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{Level, debug, error, info, warn};
 
 use super::EngineError;
 
@@ -345,21 +345,51 @@ fn exit_signal(status: &std::process::ExitStatus) -> Option<i32> {
     }
 }
 
-/// The engine's output goes to the log, line by line.
+/// The engine's output goes to the log, line by line. A line of the engine's own logger keeps
+/// its level; other output on standard error (libvlc, Apple's libraries) is a warning.
 async fn forward_output(stream: impl AsyncRead + Unpin, stderr: bool) {
     let mut lines = BufReader::new(stream).lines();
     while let Ok(Some(line)) = lines.next_line().await {
-        if stderr {
-            warn!(target: "engine", "{line}");
-        } else {
-            info!(target: "engine", "{line}");
+        match engine_log_line(&line) {
+            Some((Level::ERROR, message)) => error!(target: "engine", "{message}"),
+            Some((Level::WARN, message)) => warn!(target: "engine", "{message}"),
+            Some((Level::INFO, message)) => info!(target: "engine", "{message}"),
+            Some((_, message)) => debug!(target: "engine", "{message}"),
+            None if stderr => warn!(target: "engine", "{line}"),
+            None => info!(target: "engine", "{line}"),
         }
     }
+}
+
+/// The level and the rest (`target: message`) of a line the engine's logger wrote, which is
+/// `<RFC 3339 time> LEVEL target: message`. `None` for any other line.
+fn engine_log_line(line: &str) -> Option<(Level, &str)> {
+    let (time, rest) = line.split_once(' ')?;
+    if !time.starts_with(|c: char| c.is_ascii_digit()) || !time.ends_with('Z') {
+        return None;
+    }
+    let (level, message) = rest.trim_start().split_once(' ')?;
+    Some((level.parse().ok()?, message))
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_engine_log_line_keeps_its_level() {
+        assert_eq!(
+            engine_log_line("2026-11-23T10:49:47.553741Z  INFO adam_engine::state: DRM backend name=\"adamplay\""),
+            Some((Level::INFO, "adam_engine::state: DRM backend name=\"adamplay\""))
+        );
+        assert_eq!(
+            engine_log_line("2026-11-23T15:41:07.841797Z  WARN adam_player::controller: player: failed"),
+            Some((Level::WARN, "adam_player::controller: player: failed"))
+        );
+        // libvlc and Apple's libraries write their own lines.
+        assert_eq!(engine_log_line("[0000e7616816a270] imem demux error: Invalid get/release function pointers"), None);
+        assert_eq!(engine_log_line("__bionic_open_tzdata: couldn't find any tzdata when looking for GMT!"), None);
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::Notify;
 

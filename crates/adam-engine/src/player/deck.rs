@@ -397,7 +397,7 @@ impl Deck for VlcDeck {
     }
 
     async fn timing(&self) -> DeckTiming {
-        let (t, v) = blocking(&self.vlc, |d| (d.timing(), d.volume())).await;
+        let (t, v, source_ended) = blocking(&self.vlc, |d| (d.timing(), d.volume(), d.source_ended())).await;
         let (level, muted) = {
             let slot = self.lock();
             (slot.level, slot.muted)
@@ -407,6 +407,7 @@ impl Deck for VlcDeck {
         DeckTiming {
             position_ms: u64::try_from(t.position_ms).ok().filter(|&p| p > 0),
             length_ms: u64::try_from(t.length_ms).ok().filter(|&l| l > 0),
+            source_ended,
             volume,
             muted,
         }

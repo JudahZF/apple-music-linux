@@ -607,6 +607,28 @@ async fn a_stream_that_stalls_at_the_start_reloads_from_zero() {
     assert_eq!(h.deck_log(), ["A load s1@0 paused=false vol=100", "A load s1@0 paused=false vol=100"]);
 }
 
+// libvlc's time stops when its demuxer reads the last fragment, up to 15 s before the audio
+// ends. The position runs on the clock from there. A late value from libvlc is behind the
+// audio and does not pull the position back, so the track ends at its length.
+#[tokio::test(start_paused = true)]
+async fn the_last_fragment_runs_on_the_clock() {
+    let h = harness().await;
+    *h.length_ms.lock().unwrap() = 40_000;
+    let mut items = songs(&["1", "2"]);
+    items[0].meta.duration_ms = 40_000;
+    h.send(play_now(items, 0)).await;
+    h.until_playing("1").await;
+    wait(25.0).await;
+    h.decks[0].end_source_at(25_000);
+    wait(10.0).await;
+    let on_clock = h.state().position_ms;
+    assert!((34_000..=36_000).contains(&on_clock), "the position runs on the clock: {on_clock}");
+    h.decks[0].end_source_at(25_200);
+    wait(1.5).await;
+    let after_late_value = h.state().position_ms;
+    assert!(after_late_value >= on_clock, "a late deck time does not pull the position back: {after_late_value}");
+}
+
 #[tokio::test(start_paused = true)]
 async fn an_end_short_of_the_length_without_eof_reloads_at_the_position_twice_then_advances() {
     let h = harness().await;

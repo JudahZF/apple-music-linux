@@ -21,6 +21,7 @@ impl FourCC {
     pub const PSSH: Self = Self(*b"pssh");
     pub const SINF: Self = Self(*b"sinf");
     pub const FRMA: Self = Self(*b"frma");
+    pub const ALAC: Self = Self(*b"alac");
     pub const SCHM: Self = Self(*b"schm");
     pub const SCHI: Self = Self(*b"schi");
     pub const TENC: Self = Self(*b"tenc");

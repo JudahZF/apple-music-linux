@@ -25,7 +25,7 @@ use crate::state::{AppState, Engine, Vlc};
 /// Bumped whenever a fix changes which bytes are written to the lossless disk cache. On a
 /// mismatch every `*-alac.m4a` file is deleted, so VLC never replays bytes an older, broken key
 /// path wrote.
-const ALAC_CACHE_VERSION: &str = "cbcs-fairplay-upstream-v9";
+const ALAC_CACHE_VERSION: &str = "cbcs-fairplay-upstream-v10";
 
 /// Deletes every committed lossless cache file when the `.alac_ver` marker in `dir` differs
 /// from [`ALAC_CACHE_VERSION`], then writes the marker: a one-time migration after a

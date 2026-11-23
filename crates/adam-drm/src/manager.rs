@@ -355,6 +355,11 @@ impl DrmManager {
         Ok(self.inner.backend.dial_cbcs(cancel).await?)
     }
 
+    /// Has the backend drop its key contexts (see [`DrmBackend::refresh_keys`]).
+    pub async fn refresh_keys(&self) -> Result<(), Error> {
+        Ok(self.inner.backend.refresh_keys().await?)
+    }
+
     /// Whether CBCS sessions are in-process pipes (see [`DrmBackend::in_process`]).
     pub fn in_process(&self) -> bool {
         self.inner.backend.in_process()

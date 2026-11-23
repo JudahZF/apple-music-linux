@@ -265,6 +265,12 @@ impl CbcsSource {
             let backup = frag.mdat().map(|m| m.data.clone()).unwrap_or_default();
             if let Err(e) = alac::decrypt_fragment(&mut frag, &info, &mut drm.io).await {
                 warn!("cbcs: decrypt fragment {i} failed ({e}), reconnecting DRM connection");
+                // A reconnect alone would open the same expired key again.
+                if matches!(e, alac::Error::WrongKey { .. })
+                    && let Err(e) = self.dialer.refresh_keys().await
+                {
+                    warn!("cbcs: key refresh failed: {e}");
+                }
                 drm.redial(i).await?;
                 if let Some(mdat) = frag.mdat_mut() {
                     mdat.data = backup;

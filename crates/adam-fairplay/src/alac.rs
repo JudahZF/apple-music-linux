@@ -14,7 +14,7 @@
 use std::io;
 
 use adam_mp4::{
-    Children, Container, DecryptInfo, FourCC, Fragment, InitSegment, Mp4Box, Scheme, SubSample,
+    Children, Container, DecryptInfo, FourCC, Fragment, Frma, InitSegment, Mp4Box, Scheme, SubSample,
     Tenc, TrackInfo, Trex, decrypt_init, is_encryption_group, read_box_async,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -55,6 +55,10 @@ pub enum Error {
     },
     #[error("senc has {entries} subsample entries for {samples} samples")]
     ShortSenc { entries: usize, samples: usize },
+    /// The DRM backend decrypted without an error, but the result is not audio: Apple's
+    /// library hands out an expired cached key as if it were valid.
+    #[error("{bad} of {samples} decrypted samples are not ALAC frames (wrong or expired key)")]
+    WrongKey { bad: usize, samples: usize },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -220,6 +224,14 @@ pub async fn decrypt_fragment<S: AsyncRead + AsyncWrite + Unpin>(
             let subsamples = senc.subsamples.get(i).map_or(&[][..], Vec::as_slice);
             decrypt_sample(&mut mdat.data[sample.data.clone()], conn, subsamples, tenc).await?;
         }
+        let alac = protection.sinf.first::<Frma>().is_some_and(|f| f.data_format == FourCC::ALAC);
+        if alac {
+            let bad = samples.iter().filter(|s| !starts_like_alac(&mdat.data[s.data.clone()])).count();
+            // A wrong key fails every sample; a real stream fails none.
+            if bad * 2 > samples.len() {
+                return Err(Error::WrongKey { bad, samples: samples.len() });
+            }
+        }
 
         removed += frag
             .moof_mut()
@@ -233,6 +245,14 @@ pub async fn decrypt_fragment<S: AsyncRead + AsyncWrite + Unpin>(
         trun.data_offset = trun.data_offset.wrapping_sub(removed as i32);
     }
     Ok(())
+}
+
+/// Whether `sample` starts like an ALAC frame: a 3-bit element tag, a 4-bit instance tag, then
+/// 12 header bits that are always zero (Apple's decoder refuses anything else). Bytes
+/// decrypted with a wrong key pass 1 time in 4096. A sample under one AES block is never
+/// encrypted, so it passes.
+fn starts_like_alac(sample: &[u8]) -> bool {
+    sample.len() < 16 || matches!(sample, [a, 0, c, ..] if a & 0x01 == 0 && c & 0xE0 == 0)
 }
 
 /// Decrypts one cbcs sample in place. Without subsamples the whole sample is protected.

@@ -78,6 +78,8 @@ pub(crate) trait FairPlayLib: Send + Sync + 'static {
     fn open_key(&self, adam_id: &str, uri: &str) -> Result<Self::Key, KeyContextError>;
     /// Decrypts one sample in place.
     fn decrypt(&self, key: &Self::Key, sample: &mut [u8]) -> Result<(), DecryptError>;
+    /// Drops every key context so the next opens get fresh keys. Returns whether it worked.
+    fn refresh_keys(&self) -> bool;
 }
 
 /// The real libraries. Process-wide like Apple's session: one per backend, one backend per
@@ -110,6 +112,10 @@ impl FairPlayLib for Android {
 
     fn decrypt(&self, key: &KeyContext, sample: &mut [u8]) -> Result<(), DecryptError> {
         self.fair_play.get().ok_or(DecryptError::Failed)?.decrypt(key, sample)
+    }
+
+    fn refresh_keys(&self) -> bool {
+        self.fair_play.get().is_some_and(FairPlay::refresh_keys)
     }
 }
 
@@ -598,6 +604,18 @@ impl<L: FairPlayLib> DrmBackend for NativeBackend<L> {
         true
     }
 
+    async fn refresh_keys(&self) -> Result<(), BackendError> {
+        let s = Arc::clone(&self.0);
+        let refreshed = tokio::task::spawn_blocking(move || {
+            let _call = s.gate.enter(Some(s.gate.generation()))?;
+            Ok::<_, BackendError>(s.lib.refresh_keys())
+        })
+        .await
+        .map_err(|e| BackendError::Failed(format!("FairPlay key refresh: {e}")))??;
+        info!("drm: FairPlay keys refreshed after a key decrypted to garbage (ok={refreshed})");
+        if refreshed { Ok(()) } else { Err(BackendError::Failed("FairPlay key refresh failed".into())) }
+    }
+
     fn set_account_fallback(&self, fallback: AccountFallback) {
         lock(&self.0.state).account_fallback = Some(fallback);
     }
@@ -689,6 +707,10 @@ mod tests {
             }
             sample.iter_mut().for_each(|b| *b ^= key);
             Ok(())
+        }
+
+        fn refresh_keys(&self) -> bool {
+            true
         }
     }
 

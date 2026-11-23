@@ -115,6 +115,8 @@ struct DeckState {
     /// The load shows video (in the ring [`FakeDeck::ring`] names).
     video: bool,
     loaded: Option<Instant>,
+    /// The time libvlc stopped at: its demuxer reached the end of the stream.
+    source_ended_at: Option<u64>,
 }
 
 pub struct FakeDeck {
@@ -148,7 +150,13 @@ impl FakeDeck {
 
     fn position(st: &DeckState, length: u64) -> u64 {
         let p = st.base_ms + st.since.map_or(0, |s| s.elapsed().as_millis() as u64);
+        let p = st.source_ended_at.map_or(p, |end| p.min(end));
         if length > 0 { p.min(length) } else { p }
+    }
+
+    /// The source delivers its last data: libvlc's time stops at `ms` while the audio plays on.
+    pub fn end_source_at(&self, ms: u64) {
+        self.st.lock().unwrap().source_ended_at = Some(ms);
     }
 
     /// Ends the current media now, as libvlc would.
@@ -218,6 +226,7 @@ impl Deck for FakeDeck {
             mixer: None,
             video: req.video,
             loaded: Some(Instant::now()),
+            source_ended_at: None,
         };
         drop(st);
         // libvlc shows the first frame (also of a pre-roll) before it reports playing.
@@ -295,6 +304,7 @@ impl Deck for FakeDeck {
         let timing = DeckTiming {
             position_ms: (!buffering).then_some(position),
             length_ms: (length > 0).then_some(length),
+            source_ended: st.source_ended_at.is_some(),
             volume,
             muted,
         };

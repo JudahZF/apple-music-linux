@@ -283,6 +283,14 @@ impl Track {
     }
 
     /// Adds the time since the last tick to the played time and returns it.
+    /// Whether the position takes the deck's time `deck_ms`. After the source ended, libvlc's
+    /// time stops while the last fragment still plays and the position runs on the clock
+    /// (`tick`). A late value from the deck is then behind the audio and must not pull the
+    /// position back. A seek in progress always follows the deck, so a rewind is seen.
+    fn follows_deck(&self, deck_ms: u64, source_ended: bool) -> bool {
+        !source_ended || self.seek_guard.is_some() || deck_ms >= self.position_ms
+    }
+
     fn account_played(&mut self, now: Instant) -> Duration {
         let Some(last) = self.last_tick.replace(now) else {
             self.last_tick = None;
@@ -1467,8 +1475,10 @@ impl Controller {
         }
         if let Some(p) = reported.filter(|_| moved) {
             t.deck_position = Some(p);
-            t.position_ms = p;
-            t.position_at = now_ms;
+            if t.follows_deck(p, timing.source_ended) {
+                t.position_ms = p;
+                t.position_at = now_ms;
+            }
         }
         if !t.stream_length_seen && let Some(len) = timing.length_ms.filter(|&l| l > 0) {
             t.stream_length_seen = true;
@@ -1730,7 +1740,9 @@ impl Controller {
         let Some((deck, _)) = self.track.as_ref().and_then(|t| t.load) else { return };
         let timing = self.ports.decks[deck.index()].timing().await;
         let now_ms = self.ports.clock.now_ms();
-        if let (Some(t), Some(p)) = (self.track.as_mut(), timing.position_ms.filter(|&p| p > 0)) {
+        if let (Some(t), Some(p)) = (self.track.as_mut(), timing.position_ms.filter(|&p| p > 0))
+            && t.follows_deck(p, timing.source_ended)
+        {
             t.position_ms = p;
             t.position_at = now_ms;
         }
